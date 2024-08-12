@@ -109,7 +109,7 @@ async function requestCYOAResponses() {
     await waitForGeneration();
 
     toastr.info('CYOA: Generating response...');
-    const prompt = extension_settings.cyoa_responses?.llm_prompt || defaultSettings.llm_prompt || "";
+    const prompt = extension_settings.cyoa_responses?.llm_prompt || defaultSettings.llm_prompt;
     const useWIAN = extension_settings.cyoa_responses?.apply_wi_an || defaultSettings.apply_wi_an;
     const responseLength = extension_settings.cyoa_responses?.response_length || defaultSettings.response_length;
     //  generateQuietPrompt(quiet_prompt, quietToLoud, skipWIAN, quietImage = null, quietName = null, responseLength = null, noContext = false)
@@ -190,8 +190,8 @@ async function handleCYOABtn(event) {
         return;
     }
 
-    let impersonatePrompt = extension_settings.cyoa_responses?.llm_prompt_impersonate || '';
-    impersonatePrompt = substituteParamsExtended(String(extension_settings.cyoa_responses?.llm_prompt_impersonate), { suggestionText: text });
+    let impersonatePrompt = extension_settings.cyoa_responses?.llm_prompt_impersonate || defaultSettings.llm_prompt_impersonate;
+    impersonatePrompt = substituteParamsExtended(String(impersonatePrompt), { suggestionText: text });
 
     const quiet_prompt = `/impersonate await=true ${impersonatePrompt}`;
     inputTextarea.value = quiet_prompt;
@@ -235,7 +235,6 @@ function loadSettings() {
     if (Object.keys(extension_settings.cyoa_responses).length === 0) {
         extension_settings.cyoa_responses = {};
     }
-    Object.assign(defaultSettings, extension_settings.cyoa_responses);
 
     $('#cyoa_llm_prompt').val(extension_settings.cyoa_responses.llm_prompt).trigger('input');
     $('#cyoa_llm_prompt_impersonate').val(extension_settings.cyoa_responses.llm_prompt_impersonate).trigger('input');
