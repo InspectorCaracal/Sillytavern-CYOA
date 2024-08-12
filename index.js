@@ -3,15 +3,18 @@ import {
     getContext,
   } from "../../../extensions.js";
 
-import { saveSettingsDebounced,
+import {
+    characters,
+    saveSettingsDebounced,
     setEditedMessageId,
     generateQuietPrompt,
     is_send_press,
     substituteParamsExtended,
  } from "../../../../script.js";
-
  import { SlashCommandParser } from '../../../slash-commands/SlashCommandParser.js';
  import { SlashCommand } from '../../../slash-commands/SlashCommand.js';
+ import { ARGUMENT_TYPE, SlashCommandNamedArgument } from '../../../slash-commands/SlashCommandArgument.js';
+ import { commonEnumProviders, enumIcons } from '../../../slash-commands/SlashCommandCommonEnumsProvider.js';
  import { getMessageTimeStamp } from '../../../RossAscends-mods.js';
  import { MacrosParser } from '../../../macros.js';
  import { is_group_generating, selected_group } from '../../../group-chats.js';
@@ -20,7 +23,7 @@ const extensionName = "Sillytavern-CYOA";
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
 const defaultSettings = {
     enabled: false,
-    llm_prompt: `Stop the roleplay now and provide a response with {{suggestionNumber}} brief distinct single-sentence suggestions for the next story beat on {{user}} perspective. Ensure each suggestion aligns with its corresponding description:
+    llm_prompt: `Stop the roleplay now and provide a response with {{suggestionNumber}} brief distinct single-sentence suggestions for the next story beat for {{chooser}} perspective. Ensure each suggestion aligns with its corresponding description:
 1. Eases tension and improves the protagonist's situation
 2. Creates or increases tension and worsens the protagonist's situation
 3. Leads directly but believably to a wild twist or super weird event
@@ -33,14 +36,13 @@ Each suggestion surrounded by \`<suggestion>\` tags. E.g:
 ...
 
 Do not include any other content in your response.`,
-    llm_prompt_impersonate: `[Event Direction for the next story beat on {{user}} perspective: \`{{suggestionText}}\`]
-[Based on the expected events, write the user response]`,
+    llm_prompt_choice: `[Event Direction for the next story beat for {{chooser}} perspective: \`{{suggestionText}}\`]
+[Based on the expected events, write {{chooser}} response]`,
     apply_wi_an: true,
     num_responses: 5,
     response_length: 500,
 };
 let inApiCall = false;
-
 /**
  * Parses the CYOA response and returns the suggestions buttons
  * @param {string} response
@@ -82,9 +84,10 @@ async function waitForGeneration() {
 }
 /**
  * Handles the CYOA response generation
- * @returns
+ * @param {object} args
+ * @returns {object} sentas
  */
-async function requestCYOAResponses() {
+async function requestCYOAResponses(args) {
     const context = getContext();
     const chat = context.chat;
 
@@ -103,13 +106,23 @@ async function requestCYOAResponses() {
     if (chat.length === 0) {
         return;
     }
+    
+    let sendas;
+    let prompt = extension_settings.cyoa_responses?.llm_prompt || defaultSettings.llm_prompt;
+    if (args.as) {
+    	sendas = args.as.trim();
+        prompt = substituteParamsExtended(String(prompt), { chooser: sendas });
+    }
+    else {
+        sendas = 'user';
+        prompt = substituteParamsExtended(String(prompt), { chooser: '{{user}}' });
+    }
 
     removeLastCYOAMessage(chat);
 
     await waitForGeneration();
 
     toastr.info('CYOA: Generating response...');
-    const prompt = extension_settings.cyoa_responses?.llm_prompt || defaultSettings.llm_prompt;
     const useWIAN = extension_settings.cyoa_responses?.apply_wi_an || defaultSettings.apply_wi_an;
     const responseLength = extension_settings.cyoa_responses?.response_length || defaultSettings.response_length;
     //  generateQuietPrompt(quiet_prompt, quietToLoud, skipWIAN, quietImage = null, quietName = null, responseLength = null, noContext = false)
@@ -121,7 +134,7 @@ async function requestCYOAResponses() {
         return;
     }
 
-    await sendMessageToUI(parsedResponse);
+    await sendMessageToUI(parsedResponse, sendas);
 }
 
 /**
@@ -131,36 +144,54 @@ async function requestCYOAResponses() {
 function removeLastCYOAMessage(chat = getContext().chat) {
     let lastMessage = chat[chat.length - 1];
     if (!lastMessage?.extra || lastMessage?.extra?.model !== 'cyoa') {
-        return;
+        return {};
     }
 
     const target = $('#chat').find(`.mes[mesid=${lastMessage.mesId}]`);
     if (target.length === 0) {
-        return;
+        return {};
     }
 
+    const sent_as = {
+        chooser: lastMessage.extra.chooser,
+        is_user: lastMessage.is_user,
+    }
     setEditedMessageId(lastMessage.mesId);
     target.find('.mes_edit_delete').trigger('click', { fromSlashCommand: true });
+    return sent_as;
 }
 
 /**
  * Sends the parsed CYOA response to the SillyTavern UI
- * @param {string} parsedResponse
+ * @param {string} parsedResponse, {string} chooser
  */
-async function sendMessageToUI(parsedResponse) {
+async function sendMessageToUI(parsedResponse, chooser) {
     const context = getContext();
     const chat = context.chat;
+    
+    let original_avatar;
+    let is_user = true;
+    console.log('options for',chooser);
+    if (chooser != 'user') {
+        is_user = false;
+        const character = characters.find(x => x.avatar === chooser) ?? characters.find(x => x.name === chooser);
+        if (character && character.avatar) {
+            original_avatar = character.avatar;
+        }
+    }
 
     const messageObject = {
         name: "CYOA Suggestions",
-        is_user: true,
+        is_user: is_user,
         is_system: false,
         send_date: getMessageTimeStamp(),
         mes: `${parsedResponse}`,
         mesId: context.chat.length,
+        original_avatar: original_avatar,
         extra: {
             api: 'manual',
             model: 'cyoa',
+            chooser: chooser,
         }
     };
 
@@ -181,7 +212,7 @@ async function handleCYOABtn(event) {
     }
     await waitForGeneration();
 
-    removeLastCYOAMessage();
+    let sentas = removeLastCYOAMessage();
     // Sleep for 500ms before continuing
     await new Promise(resolve => setTimeout(resolve, 250));
 
@@ -190,10 +221,16 @@ async function handleCYOABtn(event) {
         return;
     }
 
-    let impersonatePrompt = extension_settings.cyoa_responses?.llm_prompt_impersonate || defaultSettings.llm_prompt_impersonate;
-    impersonatePrompt = substituteParamsExtended(String(impersonatePrompt), { suggestionText: text });
+    const choicePrompt = substituteParamsExtended(String(extension_settings.cyoa_responses?.llm_prompt_choice || defaultSettings.llm_prompt_choice), { suggestionText: text });
 
-    const quiet_prompt = `/impersonate await=true ${impersonatePrompt}`;
+    let quiet_prompt;
+    if (sentas?.is_user) {
+        quiet_prompt = substituteParamsExtended(String(`/impersonate await=true ${choicePrompt}`), { chooser: '{{user}}' });
+    }
+    else {
+        quiet_prompt = substituteParamsExtended(String(`/gen as=${sentas?.chooser} await=true ${choicePrompt} | /sendas name=${sentas?.chooser}`), { chooser: sentas?.chooser });
+    }
+
     inputTextarea.value = quiet_prompt;
 
     if ($button.hasClass('custom-edit-suggestion')) {
@@ -237,7 +274,7 @@ function loadSettings() {
     }
 
     $('#cyoa_llm_prompt').val(extension_settings.cyoa_responses.llm_prompt).trigger('input');
-    $('#cyoa_llm_prompt_impersonate').val(extension_settings.cyoa_responses.llm_prompt_impersonate).trigger('input');
+    $('#cyoa_llm_prompt_choice').val(extension_settings.cyoa_responses.llm_prompt_choice).trigger('input');
     $('#cyoa_apply_wi_an').prop('checked', extension_settings.cyoa_responses.apply_wi_an).trigger('input');
     $('#cyoa_num_responses').val(extension_settings.cyoa_responses.num_responses).trigger('input');
     $('#cyoa_num_responses_value').text(extension_settings.cyoa_responses.num_responses);
@@ -252,8 +289,8 @@ function addEventListeners() {
         saveSettingsDebounced();
     });
 
-    $('#cyoa_llm_prompt_impersonate').on('input', function() {
-        extension_settings.cyoa_responses.llm_prompt_impersonate = $(this).val();
+    $('#cyoa_llm_prompt_choice').on('input', function() {
+        extension_settings.cyoa_responses.llm_prompt_choice = $(this).val();
         saveSettingsDebounced();
     });
 
@@ -286,10 +323,18 @@ jQuery(async () => {
     addEventListeners();
     SlashCommandParser.addCommandObject(SlashCommand.fromProps({
         name: 'cyoa',
-        callback: async () => {
-            await requestCYOAResponses();
+        callback: async (args) => {
+            await requestCYOAResponses(args);
             return '';
         },
+        namedArgumentList: [
+            SlashCommandNamedArgument.fromProps({
+                name: 'as',
+                description: 'Character name',
+                typeList: [ARGUMENT_TYPE.STRING],
+                enumProvider: commonEnumProviders.characters('character'),
+                forceEnum: false,
+        }),],
         helpString: 'Triggers CYOA responses generation.',
     }));
 
@@ -299,3 +344,4 @@ jQuery(async () => {
     $(document).on('click', 'button.custom-edit-suggestion', handleCYOABtn);
     $(document).on('click', 'button.custom-suggestion', handleCYOABtn);
 });
+
